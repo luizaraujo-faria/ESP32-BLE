@@ -1,121 +1,148 @@
-// Importações
-#include <NimBLEDevice.h>       // Biblioteca NimBLE para BLE no ESP32
-#include <Wire.h>                 // Biblioteca para comunicação I2C
-#include <LiquidCrystal_I2C.h>    // Biblioteca para usar o display LCD com I2C
+// CHAMA AS BIBLIOTECAS
+#include <BLEDevice.h>
+#include <BLEUtils.h>
+#include <BLEServer.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
 
-// Definição dos pinos
-const int ledPin = 16;            // LED conectado no pino 16
-const int buttonPin = 17;         // Botão conectado no pino 17
-const int potPin = 34;            // Potenciômetro no pino 34
+const int ledPin = 16;
+const int potPin = 34; // Pino do potenciômetro para controlar pisca do LED
 
-// Variáveis de controle
-bool ledState = false;            // Guarda se o LED deve piscar ou não
-unsigned long lastToggle = 0;     // Guarda a última vez que o LED mudou de estado
-int interval = 1000;              // Tempo de intervalo do pisca (em ms, começa com 1s)
+// CRIA UUIDs PARA O SERVIÇO E CARACTERITICAS
+#define SERVICE_UUID        "12345678-1234-1234-1234-1234567890ab"
+#define CHARACTERISTIC_UUID "abcd1234-5678-1234-5678-1234567890ab"
 
-// Objeto LCD (endereço 0x27, 16x2)
-LiquidCrystal_I2C lcd(0x27, 16, 2);
+BLEServer* pServer = nullptr;
+BLECharacteristic* pCharacteristic = nullptr;
 
-// Ponteiros para BLE (servidor, serviço e característica)
-NimBLEServer* pServer = nullptr;
-NimBLEService* pService = nullptr;
-NimBLECharacteristic* pCharacteristic = nullptr;
+bool deviceConnected = false;
 
-// UUIDs únicos para serviço e característica BLE
-#define SERVICE_UUID        "12345678-1234-1234-1234-1234567890AB"
-#define CHARACTERISTIC_UUID "ABCD1234-5678-1234-5678-1234567890AB"
+// VARIÁVEIS DO LED
+bool ledState = false;            // Se o LED deve piscar
+unsigned long lastToggle = 0;     // Última mudança de estado do LED
+int interval = 1000;              // Intervalo do pisca (ms)
 
-class MyCallbacks : public NimBLECharacteristicCallbacks {
-  void onWrite(NimBLECharacteristic* pChar) {
+LiquidCrystal_I2C lcd(0x27, 16, 2); // Cria objeto para o display (endereço 0x27, 16 colunas, 2 linhas)
 
-    std::string value = pChar->getValue(); // Recebe dados do app
-    String msg = String(value.c_str());
-
-    Serial.println("Recebido via BLE: " + msg); // Log no monitor serial
-
-    if(msg == "1"){
-      ledState = true;
-      digitalWrite(ledPin, HIGH);                  // Liga LED imediatamente
-      lastToggle = millis();                       // Atualiza relógio
+// CALLBACK DO NIMBLE PARA CONEXÃO E DESCONEXÃO 
+class MyServerCallbacks: public BLEServerCallbacks {
+    void onConnect(BLEServer* pServer) {
+      deviceConnected = true;
+      Serial.println("✅ Cliente conectado!");
     }
-    else if(msg == "0"){
-      ledState = false;
-      digitalWrite(ledPin, LOW);
-    }
-    else if (msg.startsWith("display:")) {
-      String content = msg.substring(8);
 
-      if(content.equalsIgnoreCase("clear")){
-        lcd.clear();                      // Limpa LCD
+    void onDisconnect(BLEServer* pServer) {
+      deviceConnected = false;
+      Serial.println("❌ Cliente desconectado!");
+      BLEDevice::startAdvertising();
+    }
+};
+
+// CALLBACK DO NIMBLE PARA ESCRITA E LEITURA DE DADOS
+class MyCallbacks: public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic *pCharacteristic) {
+      String value = pCharacteristic->getValue();
+      String msg(value.c_str());
+
+      Serial.print("📩 Recebido: ");
+      Serial.println(msg);
+
+      // CONTROLE DO LED
+      if (msg == "1") {
+        ledState = true;           // Ativa pisca
+        digitalWrite(ledPin, HIGH);// Liga imediatamente
+        lastToggle = millis();     // Reinicia temporizador
+        Serial.println("💡 LED LIGADO");
+        pCharacteristic->setValue("LED ligado");
       } 
-      else{
-        lcd.clear();                      
-        lcd.setCursor(0,0);
-        lcd.print(content);                // Mostra mensagem no LCD
+      else if (msg == "0") {
+        ledState = false;          // Para pisca
+        digitalWrite(ledPin, LOW);
+        Serial.println("💡 LED DESLIGADO");
+        pCharacteristic->setValue("LED desligado");
+      } 
+      // CONTROLE DE EXIBIÇÃO DO DISPLAY
+      else if (msg.startsWith("display:")) {
+        String content = msg.substring(8);
+        Serial.print("🖥️ Display: ");
+        Serial.println(content);
+
+        if (content.equalsIgnoreCase("clear")) {
+          lcd.clear();
+        } else {
+          lcd.clear();
+          lcd.setCursor(0,0);
+          lcd.print(content);
+        }
+
+        pCharacteristic->setValue(("Display: " + content).c_str());
+      } 
+      else {
+        pCharacteristic->setValue("Comando desconhecido");
       }
     }
-  }
 };
 
 void setup() {
+  Serial.begin(115200);
+  pinMode(ledPin, OUTPUT);
+  digitalWrite(ledPin, LOW);
 
-  pinMode(ledPin, OUTPUT);        // Define pino do LED como saída
-  pinMode(buttonPin, INPUT_PULLUP); // Define pino do botão como entrada com resistor interno
-  digitalWrite(ledPin, LOW);      // Garante que o LED começa desligado
+  pinMode(potPin, INPUT); // Potenciômetro
 
-  // Inicializa o display LCD
-  lcd.init();                     
-  lcd.backlight();                // Liga luz de fundo
-  lcd.clear();                    // Limpa tela
-  lcd.setCursor(0,0);             // Coloca cursor no canto superior esquerdo
-  lcd.print("Bluetooth BLE");  // Escreve mensagem inicial
+  // INICIALIZA O DISPLAY
+  lcd.init();
+  lcd.backlight();
+  lcd.clear();
+  lcd.setCursor(0,0);
+  lcd.print("BLE ESP32 Ready");
 
-  Serial.begin(115200);           // Inicia comunicação serial (para monitorar pelo PC)
+  Serial.println("🚀 Iniciando BLE...");
 
-  // Inicializa BLE
-  NimBLEDevice::init("ESP32_BLE"); // Nome do dispositivo
-  pServer = NimBLEDevice::createServer(); // Cria servidor BLE
-  pService = pServer->createService(SERVICE_UUID); // Cria serviço BLE
-  
-  // Cria característica com permissão de leitura/escrita
+  BLEDevice::init("ESP32_BLE_Display"); // NOME DO DISPOSITIVO EM PUBLICIDADE
+  pServer = BLEDevice::createServer();
+  pServer->setCallbacks(new MyServerCallbacks());
+
+  BLEService *pService = pServer->createService(SERVICE_UUID);
+
+// DEFINE CARACTERISTICAS DE ESCRITA E LEITURA
   pCharacteristic = pService->createCharacteristic(
-      CHARACTERISTIC_UUID,
-      NIMBLE_PROPERTY::READ |
-      NIMBLE_PROPERTY::WRITE
-  );
+                      CHARACTERISTIC_UUID,
+                      BLECharacteristic::PROPERTY_READ |
+                      BLECharacteristic::PROPERTY_WRITE
+                    );
 
-  
-  // Associa callback para receber dados do app
   pCharacteristic->setCallbacks(new MyCallbacks());
-
-  // Inicia o serviço BLE
+  pCharacteristic->setValue("ESP32 Pronto!");
   pService->start();
 
-  // Começa a publicidade para que o app descubra o ESP32
-  NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
+  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
   pAdvertising->addServiceUUID(SERVICE_UUID);
-  pAdvertising->start();
+  pAdvertising->setScanResponse(true);
+  pAdvertising->setMinPreferred(0x06); 
+  BLEDevice::startAdvertising();
+
+// EXIBE AS INFORMAÇÕES NO SERIAL AO INICIALIZAR DISPOSITIVO BLE
+  Serial.println("📱 BLE Ativo! Aguardando conexão...");
+  Serial.print("🔧 Serviço UUID: ");
+  Serial.println(SERVICE_UUID);
+  Serial.print("📨 Característica UUID: ");
+  Serial.println(CHARACTERISTIC_UUID);
 }
 
 void loop() {
-  // --- Lê o potenciômetro e transforma em intervalo de pisca ---
-  int potValue = analogRead(potPin);               // Lê valor do potenciômetro (0 a 4095)
-  interval = map(potValue, 0, 4095, 200, 2000);    // Converte para intervalo entre 200ms e 2s
+  // --- Lê potenciômetro e atualiza intervalo do LED ---
+  int potValue = analogRead(potPin);
+  interval = map(potValue, 0, 4095, 200, 2000);
 
-  // --- Controle do pisca do LED ---
-  if (ledState) {                                  // Só entra se LED estiver habilitado
-    unsigned long currentMillis = millis();        // Pega o tempo atual
-    if (currentMillis - lastToggle >= interval) {  // Se já passou o tempo do intervalo...
-      lastToggle = currentMillis;                  // Atualiza o "relógio"
-      digitalWrite(ledPin, !digitalRead(ledPin));  // Troca estado do LED (liga/desliga)
+  // --- Pisca LED se estiver ativado ---
+  if (ledState) {
+    unsigned long currentMillis = millis();
+    if (currentMillis - lastToggle >= interval) {
+      lastToggle = currentMillis;
+      digitalWrite(ledPin, !digitalRead(ledPin));
     }
   }
 
-  // --- Verifica botão ---
-  if (digitalRead(buttonPin) == LOW) {             // Se botão for pressionado
-    ledState = false;                              // Para o pisca do LED
-    digitalWrite(ledPin, LOW);                     // Garante que LED fica desligado
-    pCharacteristic->setValue("Botao pressionado - LED desligado"); // Envia mensagem para o servidor
-    delay(500);                                    // Pequena pausa (evita múltiplos cliques)
-  }
+  delay(10); // Pequeno delay para estabilidade
 }
