@@ -73,13 +73,17 @@ class MyCallbacks: public BLECharacteristicCallbacks {
         digitalWrite(ledPin, HIGH);
         lastToggle = millis();
         Serial.println("💡 LED LIGADO");
+
         pCharacteristic->setValue("LED ligado");
+        pCharacteristic->notify();   // ENVIA AO APP
       } 
       else if (msg == "0") {
         ledState = false;
         digitalWrite(ledPin, LOW);
         Serial.println("💡 LED DESLIGADO");
+
         pCharacteristic->setValue("LED desligado");
+        pCharacteristic->notify();
       } 
       // CONTROLE DE EXIBIÇÃO DO DISPLAY
       else if (msg.startsWith("display:")) {
@@ -94,10 +98,13 @@ class MyCallbacks: public BLECharacteristicCallbacks {
           lcd.setCursor(0,0);
           lcd.print(content);
         }
+
         pCharacteristic->setValue(("Display: " + content).c_str());
+        pCharacteristic->notify();
       } 
       else {
         pCharacteristic->setValue("Comando desconhecido");
+        pCharacteristic->notify();
       }
     }
 };
@@ -133,24 +140,29 @@ void setup() {
   // INICIALIZA BLE
   Serial.println("🚀 Iniciando BLE...");
   BLEDevice::init("ESP32_FRID");
+
   pServer = BLEDevice::createServer();
   pServer->setCallbacks(new MyServerCallbacks());
 
   BLEService *pService = pServer->createService(SERVICE_UUID);
+
   pCharacteristic = pService->createCharacteristic(
-                      CHARACTERISTIC_UUID,
-                      BLECharacteristic::PROPERTY_READ |
-                      BLECharacteristic::PROPERTY_WRITE |
-                      BLECharacteristic::PROPERTY_NOTIFY 
-                    );
+      CHARACTERISTIC_UUID,
+      BLECharacteristic::PROPERTY_READ |
+      BLECharacteristic::PROPERTY_WRITE |
+      BLECharacteristic::PROPERTY_NOTIFY 
+  );
+
   pCharacteristic->setCallbacks(new MyCallbacks());
   pCharacteristic->setValue("ESP32 RFID Pronto!");
+
   pService->start();
 
   BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
   pAdvertising->addServiceUUID(SERVICE_UUID);
   pAdvertising->setScanResponse(true);
-  pAdvertising->setMinPreferred(0x06); 
+  pAdvertising->setMinPreferred(0x06);
+
   BLEDevice::startAdvertising();
 
   Serial.println("📱 BLE Ativo! Aguardando conexão...");
@@ -174,6 +186,7 @@ String lerCartaoRFID() {
   // Autentica e lê o bloco
   MFRC522::StatusCode status = mfrc522.PCD_Authenticate(
       MFRC522::PICC_CMD_MF_AUTH_KEY_A, blockAddr, &key, &(mfrc522.uid));
+
   if (status != MFRC522::STATUS_OK) {
     mfrc522.PICC_HaltA();
     return "";
@@ -182,6 +195,7 @@ String lerCartaoRFID() {
   byte buffer[18];
   byte size = sizeof(buffer);
   status = mfrc522.MIFARE_Read(blockAddr, buffer, &size);
+
   if (status != MFRC522::STATUS_OK) {
     mfrc522.PICC_HaltA();
     return "";
@@ -246,6 +260,7 @@ void loop() {
     // Envia via BLE se conectado
     if (deviceConnected) {
       pCharacteristic->setValue(idCartao.c_str());
+      pCharacteristic->notify();   // ENVIA AO APP
       Serial.println("📤 ID enviado via BLE");
     }
 
